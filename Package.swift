@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "union-toast",
     platforms: [
-        .iOS(.v18)
+        .iOS(.v17)
     ],
     products: [
         .library(
