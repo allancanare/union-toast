@@ -68,7 +68,6 @@ struct ToastView<Content: View>: View {
     @State private var activeReplacementID: UUID?
     @State private var replacementAnimationTask: Task<Void, Never>?
     @State private var dismissCompletionTask: Task<Void, Never>?
-    private let scrollOffsetCoordinateSpaceName = "toastScrollOffsetSpace"
 
     var body: some View {
         GeometryReader { geometryProxy in
@@ -97,16 +96,7 @@ struct ToastView<Content: View>: View {
                                 guard observedEdge != pos else { return }
                                 observedEdge = pos
                             }
-                            .toastScrollOffsetChange(in: scrollOffsetCoordinateSpaceName) { oldOffset, newOffset in
-                                handleScrollOffsetChange(
-                                    oldOffset: oldOffset,
-                                    newOffset: newOffset,
-                                    safeTop: geometryProxy.safeAreaInsets.top,
-                                    contentHeight: toastManager.contentHeight
-                                )
-                            }
                     }
-                    .coordinateSpace(name: scrollOffsetCoordinateSpaceName)
                     .onChange(of: observedEdge) { old, new in
                         if pendingEdge == new { pendingEdge = nil }
                         
@@ -187,6 +177,72 @@ struct ToastView<Content: View>: View {
                     .applyDragGesture(drag: simultaneousDragGesture, simultaneousDrag: dragGesture)
                     .scrollTargetBehavior(.edges)
                     .frame(height: max(toastManager.contentHeight, 1))
+                    .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.contentOffset.y
+                    } action: { oldOffset, newOffset in
+                        let safeTop = geometryProxy.safeAreaInsets.top
+                        let contentHeight = toastManager.contentHeight
+
+                        let visibleOffset = -safeTop
+                        // Toast is fully dismissed when its bottom edge passes the top of screen
+                        let dismissedOffset = contentHeight  // Toast completely off-screen
+                        let range = dismissedOffset - visibleOffset
+
+                        guard range > 0 else { return }
+
+                        let normalizedOffset = (newOffset - visibleOffset) / range
+                        // Don't clamp to allow natural overshoot behavior
+                        let scrollProgress = 1.0 - normalizedOffset
+                        currentScrollPos = max(0, min(1, scrollProgress))  // Only clamp for storage
+
+                        // Update animation progress during drag for immediate visual feedback
+                        if isDragging && userScrollActive {
+                            let clampedScrollProgress = max(0, min(1, scrollProgress))
+                            animationProgress = clampedScrollProgress
+                        }
+
+                        if !isDragging && userScrollActive && dismissStartScrollPos < 1.0 {
+                            // Use clamped value for position tracking
+                            let clampedScrollProgress = max(0, min(1, scrollProgress))
+
+                            // Check if we're moving towards visible (showing) rather than dismissing
+                            let isShowingToast = clampedScrollProgress > dismissStartScrollPos
+
+                            if isShowingToast {
+                                userScrollActive = false
+                                animationProgress = 1
+                                dismissStartScrollPos = 1.0
+                                dismissStartAnimProgress = 1.0
+                                lastTrackedProgress = 0
+                                if toastManager.isShowing {
+                                    toastManager.resumeTimer()
+                                }
+                                return
+                            }
+
+                            if clampedScrollProgress > lastTrackedProgress && lastTrackedProgress > 0 {
+                                userScrollActive = false
+                                animationProgress = 1
+                                dismissStartScrollPos = 1.0
+                                dismissStartAnimProgress = 1.0
+                                lastTrackedProgress = 0
+                                if toastManager.isShowing {
+                                    toastManager.resumeTimer()
+                                }
+                                return
+                            }
+
+                            lastTrackedProgress = clampedScrollProgress
+
+                            if dismissStartScrollPos > 0 {
+                                let distanceTraveled = dismissStartScrollPos - scrollProgress
+                                let maxDistance = dismissStartScrollPos
+                                let progressRatio = distanceTraveled / maxDistance
+                                animationProgress = (1.0 - progressRatio) * dismissStartAnimProgress
+                                animationProgress = max(0, animationProgress)
+                            }
+                        }
+                    }
                     .onAppear {
                         if !hasInitializedPosition {
                             hasInitializedPosition = true
@@ -323,73 +379,6 @@ struct ToastView<Content: View>: View {
 
         isDragging = true
         lastDragVelocity = velocity.height
-    }
-
-    func handleScrollOffsetChange(
-        oldOffset _: CGFloat,
-        newOffset: CGFloat,
-        safeTop: CGFloat,
-        contentHeight: CGFloat
-    ) {
-        let visibleOffset = -safeTop
-        // Toast is fully dismissed when its bottom edge passes the top of screen
-        let dismissedOffset = contentHeight  // Toast completely off-screen
-        let range = dismissedOffset - visibleOffset
-
-        guard range > 0 else { return }
-
-        let normalizedOffset = (newOffset - visibleOffset) / range
-        // Don't clamp to allow natural overshoot behavior
-        let scrollProgress = 1.0 - normalizedOffset
-        currentScrollPos = max(0, min(1, scrollProgress))  // Only clamp for storage
-
-        // Update animation progress during drag for immediate visual feedback
-        if isDragging && userScrollActive {
-            let clampedScrollProgress = max(0, min(1, scrollProgress))
-            animationProgress = clampedScrollProgress
-        }
-
-        if !isDragging && userScrollActive && dismissStartScrollPos < 1.0 {
-            // Use clamped value for position tracking
-            let clampedScrollProgress = max(0, min(1, scrollProgress))
-
-            // Check if we're moving towards visible (showing) rather than dismissing
-            let isShowingToast = clampedScrollProgress > dismissStartScrollPos
-
-            if isShowingToast {
-                userScrollActive = false
-                animationProgress = 1
-                dismissStartScrollPos = 1.0
-                dismissStartAnimProgress = 1.0
-                lastTrackedProgress = 0
-                if toastManager.isShowing {
-                    toastManager.resumeTimer()
-                }
-                return
-            }
-
-            if clampedScrollProgress > lastTrackedProgress && lastTrackedProgress > 0 {
-                userScrollActive = false
-                animationProgress = 1
-                dismissStartScrollPos = 1.0
-                dismissStartAnimProgress = 1.0
-                lastTrackedProgress = 0
-                if toastManager.isShowing {
-                    toastManager.resumeTimer()
-                }
-                return
-            }
-
-            lastTrackedProgress = clampedScrollProgress
-
-            if dismissStartScrollPos > 0 {
-                let distanceTraveled = dismissStartScrollPos - scrollProgress
-                let maxDistance = dismissStartScrollPos
-                let progressRatio = distanceTraveled / maxDistance
-                animationProgress = (1.0 - progressRatio) * dismissStartAnimProgress
-                animationProgress = max(0, animationProgress)
-            }
-        }
     }
 
     func shouldDismiss(dragDistance: CGFloat, velocity: CGFloat) -> Bool {
@@ -629,64 +618,6 @@ private extension ToastView {
         } else {
             view
         }
-    }
-}
-
-private extension View {
-    func toastScrollOffsetChange(
-        in coordinateSpaceName: String,
-        action: @escaping (_ oldOffset: CGFloat, _ newOffset: CGFloat) -> Void
-    ) -> some View {
-        modifier(
-            ToastScrollOffsetCompatModifier(
-                coordinateSpaceName: coordinateSpaceName,
-                action: action
-            )
-        )
-    }
-}
-
-private struct ToastScrollOffsetCompatModifier: ViewModifier {
-    let coordinateSpaceName: String
-    let action: (_ oldOffset: CGFloat, _ newOffset: CGFloat) -> Void
-
-    @State private var previousOffset: CGFloat = .zero
-    @State private var hasPreviousOffset = false
-
-    func body(content: Content) -> some View {
-        if #available(iOS 18.0, *) {
-            content
-                .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                    geometry.contentOffset.y
-                } action: { oldOffset, newOffset in
-                    action(oldOffset, newOffset)
-                }
-        } else {
-            content
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear
-                            .preference(
-                                key: ToastLegacyScrollOffsetPreferenceKey.self,
-                                value: -proxy.frame(in: .named(coordinateSpaceName)).minY
-                            )
-                    }
-                }
-                .onPreferenceChange(ToastLegacyScrollOffsetPreferenceKey.self) { newOffset in
-                    let oldOffset = hasPreviousOffset ? previousOffset : newOffset
-                    previousOffset = newOffset
-                    hasPreviousOffset = true
-                    action(oldOffset, newOffset)
-                }
-        }
-    }
-}
-
-private struct ToastLegacyScrollOffsetPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = .zero
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 
