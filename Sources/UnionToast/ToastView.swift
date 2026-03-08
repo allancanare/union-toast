@@ -177,9 +177,7 @@ struct ToastView<Content: View>: View {
                     .applyDragGesture(drag: simultaneousDragGesture, simultaneousDrag: dragGesture)
                     .scrollTargetBehavior(.edges)
                     .frame(height: max(toastManager.contentHeight, 1))
-                    .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                        geometry.contentOffset.y
-                    } action: { oldOffset, newOffset in
+                    .onScrollGeometryChange { oldOffset, newOffset in
                         let safeTop = geometryProxy.safeAreaInsets.top
                         let contentHeight = toastManager.contentHeight
 
@@ -617,6 +615,19 @@ private extension ToastView {
                 .offset(y: -(1 - progress) * 120)
         } else {
             view
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func onScrollGeometryChange(action: @escaping (_ oldValue: CGFloat, _ newValue: CGFloat) -> Void) -> some View {
+        if #available(iOS 18.0, *) {
+            self.onScrollGeometryChange(for: CGFloat.self, of: { geometry in
+                geometry.contentOffset.y
+            }, action: action)
+        } else {
+            self
         }
     }
 }
